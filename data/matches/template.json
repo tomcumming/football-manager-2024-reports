@@ -1,0 +1,22 @@
+{
+  "opposition": {
+    "name": "",
+    "strength": ""
+  },
+
+  "minutes-played": {
+    "_": _,
+  },
+
+  "defending": {
+    "goal": [],
+    "ccc": [],
+    "half": [],
+  },
+
+  "attacking": {
+    "goal": [],
+    "ccc": [],
+    "half": [],
+  }
+}

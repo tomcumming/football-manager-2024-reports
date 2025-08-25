@@ -1,0 +1,26 @@
+cabal-version:      3.4
+name:               fm
+version:            0.1.0.0
+
+common shared
+    ghc-options: -Wall
+    build-depends:
+        base ^>=4.21.0.0,
+        containers,
+        text,
+        aeson,
+        directory,
+        filepath,
+        time
+    default-language: GHC2021
+    default-extensions:
+        OverloadedStrings,
+        RecordWildCards,
+        DerivingVia,
+        LambdaCase
+
+executable fm
+    import:           shared
+    main-is:          Main.hs
+    hs-source-dirs:   app
+    other-modules: FM.Load
