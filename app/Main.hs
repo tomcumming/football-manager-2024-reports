@@ -18,23 +18,23 @@ main = do
   T.putStrLn ""
   T.putStrLn "Attacking"
   T.putStrLn $ T.intercalate "\t" ["Name", "Score", "Mins"]
-  forM_ attRows $ \(name, Performance {..}) -> do
+  forM_ attRows $ \(name, (pn, Performance {..})) -> do
     let r = 90 * perfPoints / perfMins
-    T.putStrLn $ T.intercalate "\t" [name, tShow r, tShow perfMins]
+    T.putStrLn $ T.intercalate "\t" [tShow pn, name, tShow r, tShow perfMins]
 
   defRows <- makeRows ldPlayers ldMatches FM.msDefending
 
   T.putStrLn ""
   T.putStrLn "Defending"
   T.putStrLn $ T.intercalate "\t" ["Name", "Score", "Mins"]
-  forM_ defRows $ \(name, Performance {..}) -> do
+  forM_ defRows $ \(name, (pn, Performance {..})) -> do
     let r = 90 * perfPoints / perfMins
-    T.putStrLn $ T.intercalate "\t" [name, tShow r, tShow perfMins]
+    T.putStrLn $ T.intercalate "\t" [tShow pn, name, tShow r, tShow perfMins]
   where
     makeRows players matches f =
-      List.sortOn snd
+      List.sortOn (snd . snd)
         . M.toList
-        . M.unionsWith (<>)
+        . M.unionsWith (\(_, p1) (pn, p2) -> (pn, p1 <> p2))
         <$> M.traverseWithKey (go f players) matches
 
 tShow :: (Show a) => a -> T.Text
@@ -66,7 +66,7 @@ go ::
   M.Map Day (M.Map FM.PlayerNumber T.Text) ->
   Day ->
   FM.MatchStats ->
-  IO (M.Map T.Text Performance)
+  IO (M.Map T.Text (FM.PlayerNumber, Performance))
 go mode playerNums d ms@FM.MatchStats {..} = do
   M.fromList <$> traverse goMinutes (M.toList msMinutes)
   where
@@ -78,10 +78,12 @@ go mode playerNums d ms@FM.MatchStats {..} = do
       M.Map FM.PlayerNumber Double
     goPoints pt ps = (pointsTypeMultiplier pt *) <$> M.unionsWith (+) ps
 
-    goMinutes :: (FM.PlayerNumber, Double) -> IO (T.Text, Performance)
+    goMinutes ::
+      (FM.PlayerNumber, Double) ->
+      IO (T.Text, (FM.PlayerNumber, Performance))
     goMinutes (pn, perfMins) = do
       name <-
         maybe (fail $ "Could not loopup player: " <> show (pn, d)) pure $
           M.lookupLE d playerNums >>= M.lookup pn . snd
       let perfPoints = fromMaybe 0 $ points M.!? pn
-      pure (name, Performance {..})
+      pure (name, (pn, Performance {..}))
