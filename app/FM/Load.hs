@@ -3,13 +3,21 @@ module FM.Load
     LoadedData (..),
     MatchStats (..),
     Opponent (..),
-    PointsType (..),
+    ChanceType (..),
+    PlayerStats (..),
+    Tally (..),
     loadData,
+    tallySuccess,
+    tallyFailed,
   )
 where
 
+import Control.Category ((>>>))
+import Control.Monad (unless, (>=>))
 import Data.Aeson qualified as Aeson
 import Data.Aeson.Types qualified as Aeson
+import Data.Char (isSpace)
+import Data.List (zipWith4)
 import Data.Map qualified as M
 import Data.Ratio ((%))
 import Data.Text qualified as T
@@ -24,7 +32,7 @@ matchMinutes = 90 + 4
 
 newtype PlayerNumber = PlayerNumber Int
   deriving (Eq, Ord)
-  deriving newtype (Show, Aeson.FromJSONKey)
+  deriving newtype (Show, Aeson.FromJSONKey, Aeson.FromJSON)
 
 data LoadedData = LoadedData
   { ldPlayers :: M.Map Day (M.Map PlayerNumber T.Text),
@@ -32,12 +40,30 @@ data LoadedData = LoadedData
   }
   deriving (Show)
 
+data Tally = Tally
+  { talAttempted :: Int,
+    talCompleted :: Double
+  }
+  deriving (Show)
+
+tallySuccess :: Tally -> Double
+tallySuccess Tally {..} = realToFrac talAttempted * talCompleted
+
+tallyFailed :: Tally -> Double
+tallyFailed Tally {..} = realToFrac talAttempted * (1 - talCompleted)
+
+data PlayerStats = PlayerStats
+  { psMinutes :: Double,
+    psPasses :: Tally,
+    psTackles :: Tally,
+    psAerial :: Tally
+  }
+  deriving (Show)
+
 data MatchStats = MatchStats
   { msOpponent :: Opponent,
-    msMinutes :: M.Map PlayerNumber Double,
-    -- | More is bad
-    msDefending :: M.Map PointsType [M.Map PlayerNumber Double],
-    msAttacking :: M.Map PointsType [M.Map PlayerNumber Double]
+    msPlayerStats :: M.Map PlayerNumber PlayerStats,
+    msChances :: M.Map ChanceType [[PlayerNumber]]
   }
   deriving (Show)
 
@@ -47,34 +73,77 @@ data Opponent = Opponent
   }
   deriving (Show)
 
-data PointsType
+data ChanceType
   = Goal
   | ClearCutChance
   | HalfChance
   deriving (Eq, Ord, Show)
 
-instance Aeson.FromJSON PointsType where
-  parseJSON = Aeson.withText "PointsType" $ \case
+instance Aeson.FromJSON ChanceType where
+  parseJSON = Aeson.withText "ChanceType" $ \case
     "goal" -> pure Goal
     "ccc" -> pure ClearCutChance
     "half" -> pure HalfChance
-    txt -> fail $ "Unknown points type: " <> T.unpack txt
+    txt -> fail $ "Unknown chance type: " <> T.unpack txt
 
-instance Aeson.FromJSONKey PointsType where
+instance Aeson.FromJSONKey ChanceType where
   fromJSONKey = Aeson.FromJSONKeyTextParser $ Aeson.parseJSON . Aeson.toJSON
 
 instance Aeson.FromJSON MatchStats where
   parseJSON = Aeson.withObject "root" $ \o -> do
-    msMinutes <- fmap goNegativeMinutes <$> o Aeson..: "minutes-played"
     msOpponent <- o Aeson..: "opposition"
-    msDefending <- o Aeson..: "defending"
-    msAttacking <- o Aeson..: "attacking"
+    msPlayerStats <- parsePlayerStats =<< o Aeson..: "players"
+    msChances <- parseChances =<< o Aeson..: "chances"
     pure MatchStats {..}
-    where
-      goNegativeMinutes :: Double -> Double
-      goNegativeMinutes m
-        | m < 0 = matchMinutes + m
-        | otherwise = m
+
+parseChances :: Aeson.Value -> Aeson.Parser (M.Map ChanceType [[PlayerNumber]])
+parseChances =
+  Aeson.parseJSON @(M.Map ChanceType [T.Text])
+    >=> traverse (traverse parseSpaceSeperated)
+
+parseSpaceSeperated :: (Aeson.FromJSON a) => T.Text -> Aeson.Parser [a]
+parseSpaceSeperated =
+  T.split isSpace
+    >>> traverse
+      (Aeson.eitherDecodeStrictText >>> either fail pure)
+
+parseTallys :: Aeson.Object -> Aeson.Parser [Tally]
+parseTallys o = do
+  attempted <- parseSpaceSeperated =<< o Aeson..: "attempted"
+  completed <- parseSpaceSeperated =<< o Aeson..: "completed%"
+  unless (length attempted == length completed) $
+    fail "parseTallys column mismatch"
+
+  pure $ zipWith Tally attempted (asRatio <$> completed)
+  where
+    asRatio :: Int -> Double
+    asRatio n = realToFrac n / 100
+
+parsePlayerStats :: Aeson.Object -> Aeson.Parser (M.Map PlayerNumber PlayerStats)
+parsePlayerStats o = do
+  numbers <- parseSpaceSeperated =<< o Aeson..: "numbers"
+  minutes <- parseSpaceSeperated =<< o Aeson..: "minutes"
+  passes <- parseTallys =<< o Aeson..: "passes"
+  tackles <- parseTallys =<< o Aeson..: "tackles"
+  aerials <- parseTallys =<< o Aeson..: "aerials"
+
+  let ps =
+        zipWith4
+          PlayerStats
+          (goNegativeMinutes <$> minutes)
+          passes
+          tackles
+          aerials
+
+  unless (length numbers == length ps) $
+    fail "Mismatching columns in player stats"
+
+  pure $ M.fromList $ zip numbers ps
+  where
+    goNegativeMinutes :: Double -> Double
+    goNegativeMinutes m
+      | m < 0 = matchMinutes + m
+      | otherwise = m
 
 instance Aeson.FromJSON Opponent where
   parseJSON = Aeson.withObject "Opponent" $ \o ->

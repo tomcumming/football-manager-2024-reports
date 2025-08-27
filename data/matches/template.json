@@ -1,22 +1,30 @@
 {
   "opposition": {
     "name": "",
-    "strength": ""
+    "strength": "_ / _"
   },
-
-  "minutes-played": {
-    "_": _,
+  "players": {
+    "numbers": "",
+    "minutes": "",
+    "passes": {
+      "attempted": "",
+      "completed%": ""
+    },
+    "tackles": {
+      "attempted": "",
+      "completed%": ""
+    },
+    "aerials": {
+      "attempted": "",
+      "completed%": ""
+    }
   },
-
-  "defending": {
-    "goal": [],
-    "ccc": [],
-    "half": []
-  },
-
-  "attacking": {
-    "goal": [],
-    "ccc": [],
-    "half": []
+  "chances": {
+    "goal": [
+    ],
+    "ccc": [
+    ],
+    "half": [
+    ]
   }
 }

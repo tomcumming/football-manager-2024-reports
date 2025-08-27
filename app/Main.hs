@@ -1,41 +1,33 @@
 module Main where
 
+import Control.Category ((>>>))
 import Control.Monad (forM_)
+import Data.Function ((&))
 import Data.List qualified as List
+import Data.List.NonEmpty qualified as NE
 import Data.Map qualified as M
 import Data.Maybe (fromMaybe)
 import Data.Text qualified as T
 import Data.Text.IO qualified as T
-import Data.Time (Day)
 import FM.Load qualified as FM
 
 main :: IO ()
 main = do
-  FM.LoadedData {..} <- FM.loadData "data"
-
-  attRows <- reverse <$> makeRows ldPlayers ldMatches FM.msAttacking
-
-  T.putStrLn ""
-  T.putStrLn "Attacking"
-  T.putStrLn $ T.intercalate "\t" ["Name", "Score", "Mins"]
-  forM_ attRows $ \(name, (pn, Performance {..})) -> do
-    let r = 90 * perfPoints / perfMins
-    T.putStrLn $ T.intercalate "\t" [tShow pn, name, tShow r, tShow perfMins]
-
-  defRows <- makeRows ldPlayers ldMatches FM.msDefending
-
-  T.putStrLn ""
-  T.putStrLn "Defending"
-  T.putStrLn $ T.intercalate "\t" ["Name", "Score", "Mins"]
-  forM_ defRows $ \(name, (pn, Performance {..})) -> do
-    let r = 90 * perfPoints / perfMins
-    T.putStrLn $ T.intercalate "\t" [tShow pn, name, tShow r, tShow perfMins]
-  where
-    makeRows players matches f =
-      List.sortOn (snd . snd)
-        . M.toList
-        . M.unionsWith (\(_, p1) (pn, p2) -> (pn, p1 <> p2))
-        <$> M.traverseWithKey (go f players) matches
+  ld <- FM.loadData "data"
+  T.putStrLn "GOALS"
+  goalPointsChart ld
+  T.putStrLn "CHANCES"
+  chancesPointsChart ld
+  T.putStrLn "AERIALS WON"
+  aerialsWonPointsChart ld
+  T.putStrLn "AERIALS LOST"
+  aerialsLostPointsChart ld
+  T.putStrLn "TACKLES WON"
+  tacklesWonPointsChart ld
+  T.putStrLn "TACKLES LOST"
+  tacklesLostPointsChart ld
+  T.putStrLn "PASSING"
+  passingPointsChart ld
 
 tShow :: (Show a) => a -> T.Text
 tShow = T.pack . show
@@ -58,32 +50,159 @@ instance Semigroup Performance where
       (perfMins p1 + perfMins p2)
       (perfPoints p1 + perfPoints p2)
 
-pointsTypeMultiplier :: FM.PointsType -> Double
-pointsTypeMultiplier _ = 1
+matchesWithPlayers :: FM.LoadedData -> [(M.Map FM.PlayerNumber T.Text, FM.MatchStats)]
+matchesWithPlayers FM.LoadedData {..} = do
+  (d, m) <- M.toList ldMatches
+  (_, ns) <-
+    M.lookupLE d ldPlayers
+      & maybe (error $ "Can't find player names for " <> show d) pure
+  pure (ns, m)
 
-go ::
-  (FM.MatchStats -> M.Map FM.PointsType [M.Map FM.PlayerNumber Double]) ->
-  M.Map Day (M.Map FM.PlayerNumber T.Text) ->
-  Day ->
-  FM.MatchStats ->
-  IO (M.Map T.Text (FM.PlayerNumber, Performance))
-go mode playerNums d ms@FM.MatchStats {..} = do
-  M.fromList <$> traverse goMinutes (M.toList msMinutes)
+goalPointsChart :: FM.LoadedData -> IO ()
+goalPointsChart =
+  renderChart ["Name", "Mins", "Score", "Per90"]
+    . performanceChart
+      ( FM.msChances
+          >>> (M.!? FM.Goal)
+          >>> fromMaybe mempty
+          >>> fmap chanceScores
+          >>> M.unionsWith (+)
+      )
+
+chancesPointsChart :: FM.LoadedData -> IO ()
+chancesPointsChart =
+  renderChart ["Name", "Mins", "Score", "Per90"]
+    . performanceChart
+      ( FM.msChances
+          >>> M.toList
+          >>> concatMap
+            ( \(ct, ps) ->
+                fmap
+                  (chanceScores >>> fmap (chanceTypeMultiple ct *))
+                  ps
+            )
+          >>> M.unionsWith (+)
+      )
+
+aerialsWonPointsChart :: FM.LoadedData -> IO ()
+aerialsWonPointsChart =
+  renderChart ["Name", "Mins", "Score", "Per90"]
+    . performanceChart
+      (FM.msPlayerStats >>> fmap (FM.psAerial >>> FM.tallySuccess))
+
+aerialsLostPointsChart :: FM.LoadedData -> IO ()
+aerialsLostPointsChart =
+  renderChart ["Name", "Mins", "Score", "Per90"]
+    . performanceChart
+      (FM.msPlayerStats >>> fmap (FM.psAerial >>> FM.tallyFailed))
+
+tacklesWonPointsChart :: FM.LoadedData -> IO ()
+tacklesWonPointsChart =
+  renderChart ["Name", "Mins", "Score", "Per90"]
+    . performanceChart
+      (FM.msPlayerStats >>> fmap (FM.psTackles >>> FM.tallySuccess))
+
+tacklesLostPointsChart :: FM.LoadedData -> IO ()
+tacklesLostPointsChart =
+  renderChart ["Name", "Mins", "Score", "Per90"]
+    . performanceChart
+      (FM.msPlayerStats >>> fmap (FM.psTackles >>> FM.tallyFailed))
+
+passingPointsChart :: FM.LoadedData -> IO ()
+passingPointsChart ld = do
+  let comps =
+        matchesWithPlayers ld
+          & fmap
+            ( \(ns, ms) ->
+                FM.msPlayerStats ms
+                  & fmap (\ps -> [(FM.psMinutes ps, FM.psPasses ps & FM.talCompleted)])
+                  & M.mapKeys (\k -> fromMaybe ("Unknown: " <> tShow k) $ ns M.!? k)
+            )
+          & M.unionsWith (<>)
+          & M.mapMaybe NE.nonEmpty
+          & fmap weightedMean
+  let mins =
+        matchesWithPlayers ld
+          & fmap
+            ( \(ns, ms) ->
+                FM.msPlayerStats ms
+                  & fmap FM.psMinutes
+                  & M.mapKeys (\k -> fromMaybe ("Unknown: " <> tShow k) $ ns M.!? k)
+            )
+          & M.unionsWith (+)
+  let rows =
+        M.intersectionWithKey
+          (\n m c -> ((n, m), c))
+          mins
+          comps
+          & M.elems
+          & List.sortOn snd
+          & reverse
+          & fmap (\((n, m), c) -> [n, tShow m, tShow (c * 100)])
+  renderChart ["Name", "Mins", "Passing%"] rows
+
+weightedMean :: NE.NonEmpty (Double, Double) -> Double
+weightedMean xs = totalSum / totalWeight
   where
-    points = M.unionsWith (+) $ M.mapWithKey goPoints $ mode ms
+    totalWeight = sum $ fst <$> xs
+    totalSum = sum $ uncurry (*) <$> xs
 
-    goPoints ::
-      FM.PointsType ->
-      [M.Map FM.PlayerNumber Double] ->
-      M.Map FM.PlayerNumber Double
-    goPoints pt ps = (pointsTypeMultiplier pt *) <$> M.unionsWith (+) ps
+chanceTypeMultiple :: FM.ChanceType -> Double
+chanceTypeMultiple = \case
+  FM.Goal -> 1
+  FM.ClearCutChance -> 0.75
+  FM.HalfChance -> 0.5
 
-    goMinutes ::
-      (FM.PlayerNumber, Double) ->
-      IO (T.Text, (FM.PlayerNumber, Performance))
-    goMinutes (pn, perfMins) = do
-      name <-
-        maybe (fail $ "Could not loopup player: " <> show (pn, d)) pure $
-          M.lookupLE d playerNums >>= M.lookup pn . snd
-      let perfPoints = fromMaybe 0 $ points M.!? pn
-      pure (name, (pn, Performance {..}))
+performanceChart ::
+  (FM.MatchStats -> M.Map FM.PlayerNumber Double) ->
+  FM.LoadedData ->
+  [[T.Text]]
+performanceChart calc =
+  matchesWithPlayers >>> \mss ->
+    let scores =
+          mss
+            & fmap
+              ( \(ns, ms) ->
+                  calc ms
+                    & M.mapKeys (\k -> fromMaybe ("Unknown: " <> tShow k) $ ns M.!? k)
+              )
+            & M.unionsWith (+)
+        mins =
+          mss
+            & fmap
+              ( \(ns, ms) ->
+                  FM.msPlayerStats ms
+                    & fmap FM.psMinutes
+                    & M.mapKeys (\k -> fromMaybe ("Unknown: " <> tShow k) $ ns M.!? k)
+              )
+            & M.unionsWith (+)
+        perfs =
+          M.mapWithKey
+            (\n m -> Performance m $ fromMaybe 0 $ scores M.!? n)
+            mins
+     in M.toList perfs
+          & List.sortOn snd
+          & reverse
+          & fmap
+            ( \(n, Performance {..}) ->
+                [ n,
+                  tShow perfMins,
+                  tShow perfPoints,
+                  tShow (90 * perfPoints / perfMins)
+                ]
+            )
+
+renderChart ::
+  [T.Text] ->
+  [[T.Text]] ->
+  IO ()
+renderChart hs rs = do
+  T.putStrLn $ T.intercalate "\t" hs
+  forM_ rs (T.putStrLn . T.intercalate "\t")
+  T.putStrLn ""
+
+chanceScores :: (Ord a) => [a] -> M.Map a Double
+chanceScores = flip zip chanceScales >>> M.fromListWith (\_ s -> s)
+
+chanceScales :: [Double]
+chanceScales = (1 :) $ (1 /) <$> [1 ..]
