@@ -24,3 +24,13 @@ executable fm
     main-is:          Main.hs
     hs-source-dirs:   app
     other-modules: FM.Load
+
+executable ocr-stats
+    import:           shared
+    main-is:          OcrStats.hs
+    hs-source-dirs:   app
+    other-modules: FM.Load
+    build-depends:
+        process,
+        async,
+        bytestring,
