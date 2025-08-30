@@ -1,1 +1,1 @@
-ormolu -i $(find app ocr -name '*.hs')
+ormolu -i $(find app -name '*.hs')

@@ -25,11 +25,9 @@ executable fm
     hs-source-dirs:   app
     other-modules: FM.Load
 
-executable ocr-stats
+executable read-printed
     import:           shared
-    main-is:          OcrStats.hs
-    hs-source-dirs:   ocr
+    main-is:          ReadPrinted.hs
+    hs-source-dirs:   app
     build-depends:
-        process,
-        async,
-        bytestring,
+        bytestring
