@@ -16,9 +16,6 @@
           upkgs.haskell.compiler.ghc9122
           upkgs.cabal-install
           pkgs.ormolu
-
-          pkgs.tesseract
-          pkgs.imagemagick
         ];
       };
       formatter."${system}" = pkgs.nixpkgs-fmt;
