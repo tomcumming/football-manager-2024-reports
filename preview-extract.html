@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <style>
+body {
+  background-image: url('example-screenshot.png');
+  background-repeat: no-repeat;
+  width: 2940px;
+  height: 1912px;
+}
+
+.bounding-box {
+  position: absolute;
+  border: 1px solid red;
+}
+    </style>
+    <script>
+
+const firstRow = 326;
+const rowHeight = 56;
+
+const nameLeft = 358
+const nameHeight = 30;
+const nameWidth = 500;
+
+const timeLeft = 200;
+const timeWidth = 40;
+
+const cellHeight = 24;
+const cellTallHeight = 30;
+const cellWidth = 60;
+const cellBigWidth = 66;
+const cellSmallWidth = 40;
+
+function addBB(l, t, w ,h) {
+  const e = document.createElement('div');
+  e.style = `top: ${t}px; left: ${l}px; width: ${w}px; height: ${h}px`;
+  e.className = 'bounding-box';
+  document.body.appendChild(e);
+}
+
+setTimeout(() => {
+  for (let row = 0; row <= 15; row += 1) {
+    addBB(timeLeft, firstRow + rowHeight * row, timeWidth, cellHeight);
+
+    addBB(nameLeft, firstRow + rowHeight * row, nameWidth, nameHeight);
+
+    const cells = [
+      [ 1284, cellWidth, cellHeight],
+      [ 1354, cellWidth, cellHeight],
+
+      [ 1424, cellWidth, cellTallHeight],
+      [ 1488, cellWidth, cellTallHeight],
+
+      [ 1560, cellWidth, cellHeight],
+      [ 1638, cellBigWidth, cellHeight],
+
+      [ 1424, cellWidth, cellTallHeight],
+      [ 1488, cellWidth, cellTallHeight],
+
+      [ 1730, cellWidth, cellHeight],
+      [ 1798, cellBigWidth, cellHeight],
+
+      [ 1872, cellWidth, cellTallHeight],
+      [ 1936, cellWidth, cellTallHeight],
+      
+      [ 1872, cellWidth, cellTallHeight],
+      [ 1936, cellWidth, cellTallHeight],
+      [ 2000, cellWidth, cellTallHeight],
+      [ 2062, cellSmallWidth, cellTallHeight],
+      
+      
+      [ 2114, cellWidth, cellHeight],
+      [ 2190, cellBigWidth, cellHeight],
+
+      [ 2274, cellSmallWidth, cellTallHeight],
+
+      [ 2336, cellWidth, cellTallHeight],
+
+      [ 2418, cellWidth, cellHeight],
+      [ 2495, cellBigWidth, cellHeight],
+    ];
+
+    for (const [l, w, h] of cells) {
+      addBB(l, firstRow + rowHeight * row, w, h);
+    }
+  }
+}, 100);
+    </script>
+  </head>
+  <body>
+  </body>
+</html>
