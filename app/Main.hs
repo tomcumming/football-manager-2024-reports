@@ -10,24 +10,28 @@ import Data.Maybe (fromMaybe)
 import Data.Text qualified as T
 import Data.Text.IO qualified as T
 import FM.Load qualified as FM
+import System.Environment (getArgs)
 
 main :: IO ()
-main = do
-  ld <- FM.loadData "data"
-  T.putStrLn "GOALS"
-  goalPointsChart ld
-  T.putStrLn "CHANCES"
-  chancesPointsChart ld
-  T.putStrLn "AERIALS WON"
-  aerialsWonPointsChart ld
-  T.putStrLn "AERIALS LOST"
-  aerialsLostPointsChart ld
-  T.putStrLn "TACKLES WON"
-  tacklesWonPointsChart ld
-  T.putStrLn "TACKLES LOST"
-  tacklesLostPointsChart ld
-  T.putStrLn "PASSING"
-  passingPointsChart ld
+main =
+  getArgs >>= \case
+    [season] -> do
+      ld <- FM.loadData "data" season
+      T.putStrLn "GOALS"
+      goalPointsChart ld
+      T.putStrLn "CHANCES"
+      chancesPointsChart ld
+      T.putStrLn "AERIALS WON"
+      aerialsWonPointsChart ld
+      T.putStrLn "AERIALS LOST"
+      aerialsLostPointsChart ld
+      T.putStrLn "TACKLES WON"
+      tacklesWonPointsChart ld
+      T.putStrLn "TACKLES LOST"
+      tacklesLostPointsChart ld
+      T.putStrLn "PASSING"
+      passingPointsChart ld
+    _ -> fail "Just pass season folder name as single arg"
 
 tShow :: (Show a) => a -> T.Text
 tShow = T.pack . show
@@ -130,6 +134,7 @@ passingPointsChart ld = do
                   & M.mapKeys (\k -> fromMaybe ("Unknown: " <> tShow k) $ ns M.!? k)
             )
           & M.unionsWith (+)
+          & M.filter (> 0)
   let rows =
         M.intersectionWithKey
           (\n m c -> ((n, m), c))
@@ -176,6 +181,7 @@ performanceChart calc =
                     & M.mapKeys (\k -> fromMaybe ("Unknown: " <> tShow k) $ ns M.!? k)
               )
             & M.unionsWith (+)
+            & M.filter (> 0)
         perfs =
           M.mapWithKey
             (\n m -> Performance m $ fromMaybe 0 $ scores M.!? n)
@@ -205,4 +211,4 @@ chanceScores :: (Ord a) => [a] -> M.Map a Double
 chanceScores = flip zip chanceScales >>> M.fromListWith (\_ s -> s)
 
 chanceScales :: [Double]
-chanceScales = (1 :) $ (1 /) <$> [1 ..]
+chanceScales = (1 :) $ (1 /) . (2 **) <$> [0 ..]

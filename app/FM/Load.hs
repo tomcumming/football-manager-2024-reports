@@ -159,17 +159,17 @@ instance Aeson.FromJSON Opponent where
             pure $ (n2 - pred n1) % n2
         | otherwise = fail $ "Invalid strength: " <> T.unpack txt
 
-loadData :: FilePath -> IO LoadedData
-loadData rootPath = do
+loadData :: FilePath -> FilePath -> IO LoadedData
+loadData rootPath groupPath = do
   ldPlayers <-
     listDirectory (rootPath </> "players")
       >>= (pure . fmap ((rootPath </> "players") </>))
       >>= traverse readPlayerNames
       >>= pure . M.fromList
   ldMatches <-
-    listDirectory (rootPath </> "matches")
+    listDirectory (rootPath </> "matches" </> groupPath)
       >>= (pure . filter (/= "template.json"))
-      >>= (pure . fmap ((rootPath </> "matches") </>))
+      >>= (pure . fmap ((rootPath </> "matches" </> groupPath) </>))
       >>= traverse readMatchStats
       >>= pure . M.fromList
 
