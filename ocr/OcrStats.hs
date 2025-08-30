@@ -1,7 +1,7 @@
 module Main (main) where
 
 import Control.Concurrent.Async (forConcurrently)
-import Control.Monad (forM, forM_, void)
+import Control.Monad (forM, void)
 import Data.Aeson qualified as Aeson
 import Data.ByteString.Lazy.Char8 qualified as BS
 import Data.Foldable (fold)
@@ -25,7 +25,8 @@ rowHeight = 56
 
 cells :: [(T.Text, Int, Int, Int)]
 cells =
-  [ ("mins", 200, 40, 25),
+  [ ("number", 104, 22, cellHeight),
+    ("mins", 200, cellSmallWidth, cellTallHeight),
     ("passAtt", 1284, cellWidth, cellHeight),
     ("passCmp%", 1354, cellWidth, cellHeight),
     ("keyPass", 1424, cellWidth, cellTallHeight),
@@ -58,7 +59,6 @@ main =
     [rowsStr, imgPath]
       | Just rows <- readMaybe rowsStr -> do
           void $ system $ "mkdir -p " <> dumpPath
-          -- prs <- forM [0.. pred rows] $ \row -> do
           prs <- fmap M.fromList $ forConcurrently [0 .. pred rows] $ \row -> do
             pr <- readPlayerRow imgPath row
             hPutStrLn stderr $
@@ -68,17 +68,31 @@ main =
                   T.unpack $ fst pr
                 ]
             pure pr
-          BS.putStrLn $ Aeson.encode prs
+          -- Add some of the fields we will need to fill in
+          let chances =
+                M.fromList
+                  [ ("goal" :: T.Text, [] :: [T.Text]),
+                    ("ccc", []),
+                    ("half", [])
+                  ]
+          let template =
+                M.fromList
+                  [ ("players" :: T.Text, Aeson.toJSON prs),
+                    ("opponent", Aeson.toJSON ("" :: T.Text)),
+                    ("strength", Aeson.toJSON (0 :: Double)),
+                    ("chances", Aeson.toJSON chances)
+                  ]
+          BS.putStrLn $ Aeson.encode template
     _args -> do
       putStrLn "Expected args: <row-count> <img-path>"
 
 readPlayerRow :: FilePath -> Int -> IO (T.Text, M.Map T.Text Aeson.Value)
 readPlayerRow imgPath row = do
   let rowTop = firstRow + rowHeight * row
-  name <- ocrText imgPath 358 rowTop 500 30 False
+  name <- ocrText imgPath 358 rowTop 500 30 False False
 
   cellVals <- fmap M.fromList <$> forM cells $ \(n, l, w, h) -> do
-    txt <- ocrText imgPath l rowTop w h True
+    txt <- ocrText imgPath l rowTop w h True (n /= "number")
     v <- case txt of
       "" -> pure Nothing
       "-" -> pure Nothing
@@ -108,30 +122,37 @@ readPlayerRow imgPath row = do
       M.insert "row" (Aeson.toJSON row) $ M.mapMaybe id cellVals
     )
 
-cropImage :: FilePath -> Int -> Int -> Int -> Int -> IO FilePath
-cropImage path x y w h = do
+cropImage :: FilePath -> Int -> Int -> Int -> Int -> Bool -> IO FilePath
+cropImage path x y w h isNumber = do
   let outPath = dumpPath </> (show x <> "x" <> show y <> ".png")
   (ec, _stdo, stde) <-
     readProcessWithExitCode
       "magick"
-      [ path,
-        "-crop",
-        fold [show w, "x", show h, "+", show x, "+", show y],
-        -- , "-channel"
-        -- , "RGB"
-        -- , "-threshold"
-        -- , "50%"
-        outPath
-      ]
+      ( [ path,
+          "-crop",
+          fold [show w, "x", show h, "+", show x, "+", show y]
+        ]
+          <> ( if isNumber
+                 then
+                   [ "-channel",
+                     "RGB",
+                     "-threshold",
+                     "50%"
+                   ]
+                 else []
+             )
+          <> [ outPath
+             ]
+      )
       ""
   case ec of
     ExitSuccess -> pure outPath
     ExitFailure {} -> fail stde
 
-ocrText :: FilePath -> Int -> Int -> Int -> Int -> Bool -> IO T.Text
-ocrText path x y w h isNumber = do
+ocrText :: FilePath -> Int -> Int -> Int -> Int -> Bool -> Bool -> IO T.Text
+ocrText path x y w h isNumber isThreash = do
   let numberFlags = if isNumber then ["numbers-config"] else []
-  croppedPath <- cropImage path x y w h
+  croppedPath <- cropImage path x y w h isThreash
   (ec, stdo, stde) <-
     readProcessWithExitCode
       "tesseract"

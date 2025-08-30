@@ -13,19 +13,24 @@ module FM.Load
 where
 
 import Control.Category ((>>>))
-import Control.Monad (unless, (>=>))
+import Control.Monad ((>=>), unless)
 import Data.Aeson qualified as Aeson
 import Data.Aeson.Types qualified as Aeson
+import Data.Bifunctor (first)
 import Data.Char (isSpace)
-import Data.List (zipWith4)
+import Data.Foldable (forM_, traverse_)
+import Data.Function ((&))
 import Data.Map qualified as M
-import Data.Ratio ((%))
+import Data.Maybe (fromMaybe)
+import Data.Set qualified as S
 import Data.Text qualified as T
 import Data.Time (Day)
 import Data.Time.Format.ISO8601 (iso8601ParseM)
+import Data.Tuple qualified as Tuple
+import Debug.Trace (traceShowM)
 import System.Directory (listDirectory)
 import System.FilePath (takeBaseName, (</>))
-import Text.Read (readMaybe)
+import qualified Data.Aeson.KeyMap as KM
 
 matchMinutes :: Double
 matchMinutes = 90 + 4
@@ -34,9 +39,8 @@ newtype PlayerNumber = PlayerNumber Int
   deriving (Eq, Ord)
   deriving newtype (Show, Aeson.FromJSONKey, Aeson.FromJSON)
 
-data LoadedData = LoadedData
-  { ldPlayers :: M.Map Day (M.Map PlayerNumber T.Text),
-    ldMatches :: M.Map Day MatchStats
+newtype LoadedData = LoadedData
+  { ldMatches :: M.Map Day MatchStats
   }
   deriving (Show)
 
@@ -46,6 +50,9 @@ data Tally = Tally
   }
   deriving (Show)
 
+zeroTally :: Tally
+zeroTally = Tally 0 0
+
 tallySuccess :: Tally -> Double
 tallySuccess Tally {..} = realToFrac talAttempted * talCompleted
 
@@ -53,7 +60,8 @@ tallyFailed :: Tally -> Double
 tallyFailed Tally {..} = realToFrac talAttempted * (1 - talCompleted)
 
 data PlayerStats = PlayerStats
-  { psMinutes :: Double,
+  { psNumber :: PlayerNumber,
+    psMinutes :: Double,
     psPasses :: Tally,
     psTackles :: Tally,
     psAerial :: Tally
@@ -62,14 +70,14 @@ data PlayerStats = PlayerStats
 
 data MatchStats = MatchStats
   { msOpponent :: Opponent,
-    msPlayerStats :: M.Map PlayerNumber PlayerStats,
+    msPlayerStats :: M.Map T.Text PlayerStats,
     msChances :: M.Map ChanceType [[PlayerNumber]]
   }
   deriving (Show)
 
 data Opponent = Opponent
   { oppName :: T.Text,
-    oppStrength :: Rational
+    oppStrength :: Double
   }
   deriving (Show)
 
@@ -91,8 +99,10 @@ instance Aeson.FromJSONKey ChanceType where
 
 instance Aeson.FromJSON MatchStats where
   parseJSON = Aeson.withObject "root" $ \o -> do
-    msOpponent <- o Aeson..: "opposition"
-    msPlayerStats <- parsePlayerStats =<< o Aeson..: "players"
+    oppName <- o Aeson..: "opponent"
+    oppStrength <- o Aeson..: "strength"
+    let msOpponent = Opponent {..}
+    msPlayerStats <- traverse parsePlayerStats =<< o Aeson..: "players"
     msChances <- parseChances =<< o Aeson..: "chances"
     pure MatchStats {..}
 
@@ -107,86 +117,109 @@ parseSpaceSeperated =
     >>> traverse
       (Aeson.eitherDecodeStrictText >>> either fail pure)
 
-parseTallys :: Aeson.Object -> Aeson.Parser [Tally]
-parseTallys o = do
-  attempted <- parseSpaceSeperated =<< o Aeson..: "attempted"
-  completed <- parseSpaceSeperated =<< o Aeson..: "completed%"
-  unless (length attempted == length completed) $
-    fail "parseTallys column mismatch"
-
-  pure $ zipWith Tally attempted (asRatio <$> completed)
+parsePlayerStats :: Aeson.Object -> Aeson.Parser PlayerStats
+parsePlayerStats o = do
+  row :: Int <- o Aeson..: "row"
+  psNumber :: PlayerNumber <- o Aeson..: "number"
+  psMinutes <- rowMinutes row <$> o Aeson..:? "mins"
+  psPasses <-
+    fromMaybe zeroTally
+      <$> ( liftA2 Tally
+              <$> (o Aeson..:? "passAtt")
+              <*> (fmap asRatio <$> (o Aeson..:? "passCmp%"))
+          )
+  psTackles <-
+    fromMaybe zeroTally
+      <$> ( liftA2 Tally
+              <$> (o Aeson..:? "tackAtt")
+              <*> (fmap asRatio <$> (o Aeson..:? "tackCmp%"))
+          )
+  psAerial <-
+    fromMaybe zeroTally
+      <$> ( liftA2 Tally
+              <$> (o Aeson..:? "aerAtt")
+              <*> (fmap asRatio <$> (o Aeson..:? "aerCmp%"))
+          )
+  sanityCheckNumbers o
+  pure PlayerStats {..}
   where
+    rowMinutes :: Int -> Maybe Int -> Double
+    rowMinutes row = \case
+      Just n
+        | row >= 11 -> max 3 $ matchMinutes - realToFrac n
+        | otherwise -> realToFrac n
+      Nothing
+        | row >= 11 -> 0
+        | otherwise -> 90
+
     asRatio :: Int -> Double
     asRatio n = realToFrac n / 100
 
-parsePlayerStats :: Aeson.Object -> Aeson.Parser (M.Map PlayerNumber PlayerStats)
-parsePlayerStats o = do
-  numbers <- parseSpaceSeperated =<< o Aeson..: "numbers"
-  minutes <- parseSpaceSeperated =<< o Aeson..: "minutes"
-  passes <- parseTallys =<< o Aeson..: "passes"
-  tackles <- parseTallys =<< o Aeson..: "tackles"
-  aerials <- parseTallys =<< o Aeson..: "aerials"
+sanityCheckNumbers :: Aeson.Object -> Aeson.Parser ()
+sanityCheckNumbers = KM.toList
+  >>> traverse_ (\(k, v) -> Aeson.modifyFailure (("In " <> show k) <>) $ do
+    n :: Int <- Aeson.parseJSON v
+    let maxv = if k == "mins" then 200 else 100
+    unless (n >= 0 && n <= maxv) $ fail $ "Out of sensible range: " <> show n)
 
-  let ps =
-        zipWith4
-          PlayerStats
-          (goNegativeMinutes <$> minutes)
-          passes
-          tackles
-          aerials
-
-  unless (length numbers == length ps) $
-    fail "Mismatching columns in player stats"
-
-  pure $ M.fromList $ zip numbers ps
-  where
-    goNegativeMinutes :: Double -> Double
-    goNegativeMinutes m
-      | m < 0 = matchMinutes + m
-      | otherwise = m
-
-instance Aeson.FromJSON Opponent where
-  parseJSON = Aeson.withObject "Opponent" $ \o ->
-    Opponent
-      <$> o Aeson..: "name"
-      <*> (parseStrength =<< o Aeson..: "strength")
-    where
-      parseStrength :: T.Text -> Aeson.Parser Rational
-      parseStrength txt
-        | [s1, s2] <- T.splitOn " / " txt,
-          Just n1 <- readMaybe (T.unpack s1),
-          Just n2 <- readMaybe (T.unpack s2) =
-            pure $ (n2 - pred n1) % n2
-        | otherwise = fail $ "Invalid strength: " <> T.unpack txt
-
-loadData :: FilePath -> FilePath -> IO LoadedData
-loadData rootPath groupPath = do
-  ldPlayers <-
-    listDirectory (rootPath </> "players")
-      >>= (pure . fmap ((rootPath </> "players") </>))
-      >>= traverse readPlayerNames
-      >>= pure . M.fromList
+loadData :: FilePath -> IO LoadedData
+loadData rootPath = do
   ldMatches <-
-    listDirectory (rootPath </> "matches" </> groupPath)
-      >>= (pure . filter (/= "template.json"))
-      >>= (pure . fmap ((rootPath </> "matches" </> groupPath) </>))
+    listDirectory (rootPath </> "matches")
+      >>= (pure . fmap ((rootPath </> "matches") </>))
       >>= traverse readMatchStats
       >>= pure . M.fromList
 
+  reportDupNumbers ldMatches
+  reportChangedNumbers ldMatches
+
   pure $ LoadedData {..}
+
+reportDupNumbers :: M.Map Day MatchStats -> IO ()
+reportDupNumbers ldMatches = do
+  forM_ (M.toList ldMatches) $ \(d, ms) -> do
+    let numbers =
+          psNumber <$> msPlayerStats ms
+            & M.toList
+            & fmap (first S.singleton)
+            & fmap Tuple.swap
+            & M.fromListWith (<>)
+            & M.filter (S.size >>> (/= 1))
+    forM_ (M.toList numbers) $ \(n, ns) ->
+      fail $
+        unwords ["Players share number", show d, show n, show ns]
+
+reportChangedNumbers :: M.Map Day MatchStats -> IO ()
+reportChangedNumbers = go mempty
+  where
+    go :: M.Map T.Text PlayerNumber -> M.Map Day MatchStats -> IO ()
+    go current =
+      M.minViewWithKey >>> \case
+        Nothing -> pure ()
+        Just ((d, next), rest) -> do
+          let nextNames = psNumber <$> msPlayerStats next
+          let current' = nextNames <> current
+
+          let changes =
+                M.intersectionWith
+                  ( \n1 n2 ->
+                      if n1 == n2
+                        then Nothing
+                        else Just (n1, n2)
+                  )
+                  current
+                  nextNames
+                  & M.mapMaybe id
+
+          forM_ (M.toList changes) $ \(n, (n1, n2)) ->
+            putStrLn $
+              unwords
+                ["On", show d, T.unpack n, "changed number", show n1, "to", show n2]
+
+          go current' rest
 
 readMatchStats :: FilePath -> IO (Day, MatchStats)
 readMatchStats path = do
   day :: Day <- iso8601ParseM (takeBaseName path)
   Aeson.eitherDecodeFileStrict path
     >>= either fail (pure . (day,))
-
-readPlayerNames :: FilePath -> IO (Day, M.Map PlayerNumber T.Text)
-readPlayerNames path = do
-  day :: Day <- iso8601ParseM (takeBaseName path)
-  Aeson.eitherDecodeFileStrict path
-    >>= either fail (pure . (day,)) . (>>= Aeson.parseEither parseNames)
-  where
-    parseNames :: Aeson.Value -> Aeson.Parser (M.Map PlayerNumber T.Text)
-    parseNames = Aeson.withObject "root" $ \o -> do
-      o Aeson..: "names"

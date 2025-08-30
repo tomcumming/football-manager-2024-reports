@@ -9,14 +9,15 @@ import Data.Map qualified as M
 import Data.Maybe (fromMaybe)
 import Data.Text qualified as T
 import Data.Text.IO qualified as T
+import Data.Tuple (swap)
 import FM.Load qualified as FM
 import System.Environment (getArgs)
 
 main :: IO ()
 main =
   getArgs >>= \case
-    [season] -> do
-      ld <- FM.loadData "data" season
+    [] -> do
+      ld <- FM.loadData "data"
       T.putStrLn "GOALS"
       goalPointsChart ld
       T.putStrLn "CHANCES"
@@ -31,7 +32,16 @@ main =
       tacklesLostPointsChart ld
       T.putStrLn "PASSING"
       passingPointsChart ld
+      T.putStrLn "PLAYERS"
+      nameAllPlayers ld
     _ -> fail "Just pass season folder name as single arg"
+
+nameAllPlayers :: FM.LoadedData -> IO ()
+nameAllPlayers =
+  FM.ldMatches
+    >>> M.elems
+    >>> foldMap (FM.msPlayerStats >>> M.keysSet)
+    >>> mapM_ T.putStrLn
 
 tShow :: (Show a) => a -> T.Text
 tShow = T.pack . show
@@ -54,19 +64,11 @@ instance Semigroup Performance where
       (perfMins p1 + perfMins p2)
       (perfPoints p1 + perfPoints p2)
 
-matchesWithPlayers :: FM.LoadedData -> [(M.Map FM.PlayerNumber T.Text, FM.MatchStats)]
-matchesWithPlayers FM.LoadedData {..} = do
-  (d, m) <- M.toList ldMatches
-  (_, ns) <-
-    M.lookupLE d ldPlayers
-      & maybe (error $ "Can't find player names for " <> show d) pure
-  pure (ns, m)
-
 goalPointsChart :: FM.LoadedData -> IO ()
 goalPointsChart =
   renderChart ["Name", "Mins", "Score", "Per90"]
     . performanceChart
-      ( FM.msChances
+      ( namedChances
           >>> (M.!? FM.Goal)
           >>> fromMaybe mempty
           >>> fmap chanceScores
@@ -77,7 +79,7 @@ chancesPointsChart :: FM.LoadedData -> IO ()
 chancesPointsChart =
   renderChart ["Name", "Mins", "Score", "Per90"]
     . performanceChart
-      ( FM.msChances
+      ( namedChances
           >>> M.toList
           >>> concatMap
             ( \(ct, ps) ->
@@ -87,6 +89,27 @@ chancesPointsChart =
             )
           >>> M.unionsWith (+)
       )
+
+namedChances :: FM.MatchStats -> M.Map FM.ChanceType [[T.Text]]
+namedChances FM.MatchStats {..} =
+  msChances
+    & fmap
+      ( fmap
+          ( fmap
+              ( \n ->
+                  fromMaybe
+                    ("Unknown: " <> tShow n)
+                    (names M.!? n)
+              )
+          )
+      )
+  where
+    names :: M.Map FM.PlayerNumber T.Text
+    names =
+      FM.psNumber <$> msPlayerStats
+        & M.toList
+        & fmap swap
+        & M.fromList
 
 aerialsWonPointsChart :: FM.LoadedData -> IO ()
 aerialsWonPointsChart =
@@ -115,23 +138,21 @@ tacklesLostPointsChart =
 passingPointsChart :: FM.LoadedData -> IO ()
 passingPointsChart ld = do
   let comps =
-        matchesWithPlayers ld
+        FM.ldMatches ld
           & fmap
-            ( \(ns, ms) ->
+            ( \ms ->
                 FM.msPlayerStats ms
                   & fmap (\ps -> [(FM.psMinutes ps, FM.psPasses ps & FM.talCompleted)])
-                  & M.mapKeys (\k -> fromMaybe ("Unknown: " <> tShow k) $ ns M.!? k)
             )
           & M.unionsWith (<>)
           & M.mapMaybe NE.nonEmpty
           & fmap weightedMean
   let mins =
-        matchesWithPlayers ld
+        FM.ldMatches ld
           & fmap
-            ( \(ns, ms) ->
+            ( \ms ->
                 FM.msPlayerStats ms
                   & fmap FM.psMinutes
-                  & M.mapKeys (\k -> fromMaybe ("Unknown: " <> tShow k) $ ns M.!? k)
             )
           & M.unionsWith (+)
           & M.filter (> 0)
@@ -159,26 +180,21 @@ chanceTypeMultiple = \case
   FM.HalfChance -> 0.5
 
 performanceChart ::
-  (FM.MatchStats -> M.Map FM.PlayerNumber Double) ->
+  (FM.MatchStats -> M.Map T.Text Double) ->
   FM.LoadedData ->
   [[T.Text]]
 performanceChart calc =
-  matchesWithPlayers >>> \mss ->
+  FM.ldMatches >>> \mss ->
     let scores =
           mss
-            & fmap
-              ( \(ns, ms) ->
-                  calc ms
-                    & M.mapKeys (\k -> fromMaybe ("Unknown: " <> tShow k) $ ns M.!? k)
-              )
+            & fmap calc
             & M.unionsWith (+)
         mins =
           mss
             & fmap
-              ( \(ns, ms) ->
+              ( \ms ->
                   FM.msPlayerStats ms
                     & fmap FM.psMinutes
-                    & M.mapKeys (\k -> fromMaybe ("Unknown: " <> tShow k) $ ns M.!? k)
               )
             & M.unionsWith (+)
             & M.filter (> 0)

@@ -28,8 +28,7 @@ executable fm
 executable ocr-stats
     import:           shared
     main-is:          OcrStats.hs
-    hs-source-dirs:   app
-    other-modules: FM.Load
+    hs-source-dirs:   ocr
     build-depends:
         process,
         async,
