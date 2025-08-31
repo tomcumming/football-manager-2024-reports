@@ -29,6 +29,13 @@ makeTemplate players =
       ),
       ("attacking", chancesTemplate),
       ("defending", chancesTemplate),
+      ( "minutes",
+        Aeson.toJSON $
+          M.fromList @T.Text @T.Text
+            [ ("numbers", ""),
+              ("minutes", "")
+            ]
+      ),
       ("players", Aeson.toJSON players)
     ]
   where

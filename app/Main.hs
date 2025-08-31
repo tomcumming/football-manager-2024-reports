@@ -9,7 +9,6 @@ import Data.Map qualified as M
 import Data.Maybe (fromMaybe)
 import Data.Text qualified as T
 import Data.Text.IO qualified as T
-import Data.Tuple (swap)
 import FM.Load qualified as FM
 import System.Environment (getArgs)
 
@@ -18,30 +17,95 @@ main =
   getArgs >>= \case
     [] -> do
       ld <- FM.loadData "data"
-      T.putStrLn "GOALS"
+      T.putStrLn "GOAL CONTRIBUTION"
       goalPointsChart ld
-      T.putStrLn "CHANCES"
+      T.putStrLn "CHANCE CONTRIBUTION"
       chancesPointsChart ld
-      T.putStrLn "AERIALS WON"
-      aerialsWonPointsChart ld
-      T.putStrLn "AERIALS LOST"
-      aerialsLostPointsChart ld
-      T.putStrLn "TACKLES WON"
-      tacklesWonPointsChart ld
-      T.putStrLn "TACKLES LOST"
-      tacklesLostPointsChart ld
-      T.putStrLn "PASSING"
-      passingPointsChart ld
-      T.putStrLn "PLAYERS"
-      nameAllPlayers ld
+      T.putStrLn "DEFENCE GOAL"
+      goalDefencePointsChart ld
+      T.putStrLn "DEFENCE CHANCE"
+      chanceDefencePointsChart ld
     _ -> fail "Just pass season folder name as single arg"
 
-nameAllPlayers :: FM.LoadedData -> IO ()
-nameAllPlayers =
+goalPointsChart :: FM.LoadedData -> IO ()
+goalPointsChart ld = do
+  let rows = flip reportFromMatchScore ld $ \FM.MatchStats {msAttacking} ->
+        let goals = fromMaybe mempty $ msAttacking M.!? FM.Goal
+         in M.unionsWith (+) $ chanceScores <$> goals
+  renderChart
+    ["No", "Name", "Mins", "Score", "Score / 90"]
+    rows
+
+chancesPointsChart :: FM.LoadedData -> IO ()
+chancesPointsChart ld = do
+  let rows = flip reportFromMatchScore ld $ \FM.MatchStats {msAttacking} ->
+        M.toList msAttacking
+          & concatMap
+            ( \(ct, cs) ->
+                cs
+                  & fmap (chanceScores >>> fmap (* chanceTypeMultiple ct))
+            )
+          & M.unionsWith (+)
+  renderChart
+    ["No", "Name", "Mins", "Score", "Score / 90"]
+    rows
+
+goalDefencePointsChart :: FM.LoadedData -> IO ()
+goalDefencePointsChart ld = do
+  let rows = flip reportFromMatchScore ld $ \FM.MatchStats {msDefending} ->
+        let goals = fromMaybe mempty $ msDefending M.!? FM.Goal
+         in M.unionsWith (+) $ chanceScores <$> goals
+  renderChart
+    ["No", "Name", "Mins", "Score", "Score / 90"]
+    rows
+
+chanceDefencePointsChart :: FM.LoadedData -> IO ()
+chanceDefencePointsChart ld = do
+  let rows = flip reportFromMatchScore ld $ \FM.MatchStats {msDefending} ->
+        M.toList msDefending
+          & concatMap
+            ( \(ct, cs) ->
+                cs
+                  & fmap (chanceScores >>> fmap (* chanceTypeMultiple ct))
+            )
+          & M.unionsWith (+)
+  renderChart
+    ["No", "Name", "Mins", "Score", "Score / 90"]
+    rows
+
+reportFromMatchScore ::
+  (FM.MatchStats -> M.Map FM.PlayerNumber Double) ->
+  FM.LoadedData ->
+  [[T.Text]]
+reportFromMatchScore calc =
   FM.ldMatches
     >>> M.elems
-    >>> foldMap (FM.msPlayerStats >>> M.keysSet)
-    >>> mapM_ T.putStrLn
+    >>> fmap
+      ( \ms@FM.MatchStats {..} ->
+          let scores = calc ms
+              named =
+                M.toList (M.intersectionWith (,) msMinutes scores)
+                  & fmap
+                    ( \(n, (m, s)) ->
+                        M.singleton
+                          ( msPlayers M.!? n
+                              & maybe ("Unknown " <> tShow n) FM.pdName
+                          )
+                          (n, Performance m s)
+                    )
+                  & M.unionsWith comb
+           in named
+      )
+    >>> M.unionsWith comb
+    >>> M.toList
+    >>> List.sortOn (snd >>> snd)
+    >>> reverse
+    >>> fmap
+      ( \(na, (no, Performance m s)) ->
+          [tShow no, na, tShow m, tShow s, tShow (s * 90 / m)]
+      )
+  where
+    comb (n, s1) (_, s2) = (n, s1 <> s2)
 
 tShow :: (Show a) => a -> T.Text
 tShow = T.pack . show
@@ -64,109 +128,6 @@ instance Semigroup Performance where
       (perfMins p1 + perfMins p2)
       (perfPoints p1 + perfPoints p2)
 
-goalPointsChart :: FM.LoadedData -> IO ()
-goalPointsChart =
-  renderChart ["Name", "Mins", "Score", "Per90"]
-    . performanceChart
-      ( namedChances
-          >>> (M.!? FM.Goal)
-          >>> fromMaybe mempty
-          >>> fmap chanceScores
-          >>> M.unionsWith (+)
-      )
-
-chancesPointsChart :: FM.LoadedData -> IO ()
-chancesPointsChart =
-  renderChart ["Name", "Mins", "Score", "Per90"]
-    . performanceChart
-      ( namedChances
-          >>> M.toList
-          >>> concatMap
-            ( \(ct, ps) ->
-                fmap
-                  (chanceScores >>> fmap (chanceTypeMultiple ct *))
-                  ps
-            )
-          >>> M.unionsWith (+)
-      )
-
-namedChances :: FM.MatchStats -> M.Map FM.ChanceType [[T.Text]]
-namedChances FM.MatchStats {..} =
-  msChances
-    & fmap
-      ( fmap
-          ( fmap
-              ( \n ->
-                  fromMaybe
-                    ("Unknown: " <> tShow n)
-                    (names M.!? n)
-              )
-          )
-      )
-  where
-    names :: M.Map FM.PlayerNumber T.Text
-    names =
-      FM.psNumber <$> msPlayerStats
-        & M.toList
-        & fmap swap
-        & M.fromList
-
-aerialsWonPointsChart :: FM.LoadedData -> IO ()
-aerialsWonPointsChart =
-  renderChart ["Name", "Mins", "Score", "Per90"]
-    . performanceChart
-      (FM.msPlayerStats >>> fmap (FM.psAerial >>> FM.tallySuccess))
-
-aerialsLostPointsChart :: FM.LoadedData -> IO ()
-aerialsLostPointsChart =
-  renderChart ["Name", "Mins", "Score", "Per90"]
-    . performanceChart
-      (FM.msPlayerStats >>> fmap (FM.psAerial >>> FM.tallyFailed))
-
-tacklesWonPointsChart :: FM.LoadedData -> IO ()
-tacklesWonPointsChart =
-  renderChart ["Name", "Mins", "Score", "Per90"]
-    . performanceChart
-      (FM.msPlayerStats >>> fmap (FM.psTackles >>> FM.tallySuccess))
-
-tacklesLostPointsChart :: FM.LoadedData -> IO ()
-tacklesLostPointsChart =
-  renderChart ["Name", "Mins", "Score", "Per90"]
-    . performanceChart
-      (FM.msPlayerStats >>> fmap (FM.psTackles >>> FM.tallyFailed))
-
-passingPointsChart :: FM.LoadedData -> IO ()
-passingPointsChart ld = do
-  let comps =
-        FM.ldMatches ld
-          & fmap
-            ( \ms ->
-                FM.msPlayerStats ms
-                  & fmap (\ps -> [(FM.psMinutes ps, FM.psPasses ps & FM.talCompleted)])
-            )
-          & M.unionsWith (<>)
-          & M.mapMaybe NE.nonEmpty
-          & fmap weightedMean
-  let mins =
-        FM.ldMatches ld
-          & fmap
-            ( \ms ->
-                FM.msPlayerStats ms
-                  & fmap FM.psMinutes
-            )
-          & M.unionsWith (+)
-          & M.filter (> 0)
-  let rows =
-        M.intersectionWithKey
-          (\n m c -> ((n, m), c))
-          mins
-          comps
-          & M.elems
-          & List.sortOn snd
-          & reverse
-          & fmap (\((n, m), c) -> [n, tShow m, tShow (c * 100)])
-  renderChart ["Name", "Mins", "Passing%"] rows
-
 weightedMean :: NE.NonEmpty (Double, Double) -> Double
 weightedMean xs = totalSum / totalWeight
   where
@@ -178,41 +139,6 @@ chanceTypeMultiple = \case
   FM.Goal -> 1
   FM.ClearCutChance -> 0.75
   FM.HalfChance -> 0.5
-
-performanceChart ::
-  (FM.MatchStats -> M.Map T.Text Double) ->
-  FM.LoadedData ->
-  [[T.Text]]
-performanceChart calc =
-  FM.ldMatches >>> \mss ->
-    let scores =
-          mss
-            & fmap calc
-            & M.unionsWith (+)
-        mins =
-          mss
-            & fmap
-              ( \ms ->
-                  FM.msPlayerStats ms
-                    & fmap FM.psMinutes
-              )
-            & M.unionsWith (+)
-            & M.filter (> 0)
-        perfs =
-          M.mapWithKey
-            (\n m -> Performance m $ fromMaybe 0 $ scores M.!? n)
-            mins
-     in M.toList perfs
-          & List.sortOn snd
-          & reverse
-          & fmap
-            ( \(n, Performance {..}) ->
-                [ n,
-                  tShow perfMins,
-                  tShow perfPoints,
-                  tShow (90 * perfPoints / perfMins)
-                ]
-            )
 
 renderChart ::
   [T.Text] ->
